@@ -660,7 +660,7 @@ async def get_time_entries(employee_id: Optional[str] = None, project_id: Option
     time_entries = await db.time_entries.find(query).to_list(1000)
     return [TimeEntry(**entry) for entry in time_entries]
 
-# Costs endpoints
+# Enhanced Costs endpoints with approval workflow
 @api_router.post("/costs", response_model=Cost)
 async def create_cost(cost: CostCreate):
     cost_dict = cost.dict()
@@ -668,28 +668,67 @@ async def create_cost(cost: CostCreate):
     if 'date' in cost_dict and isinstance(cost_dict['date'], date):
         cost_dict['date'] = datetime.combine(cost_dict['date'], datetime.min.time())
     
+    # For high amount costs, require approval
+    if cost_dict['amount'] > 10000:  # Costs above 10,000 need approval
+        cost_dict['approval_status'] = ApprovalStatus.PENDING
+        
+        # Create approval request
+        approval_data = ApprovalCreate(
+            type="cost_approval",
+            request_id=str(uuid.uuid4()),
+            requested_by="system",
+            amount=cost_dict['amount'],
+            description=f"موافقة على تكلفة: {cost_dict['description']}"
+        )
+        await create_approval(approval_data)
+        
+        # Create alert for approval needed
+        alert_data = AlertCreate(
+            title="موافقة مطلوبة",
+            message=f"تكلفة تتطلب موافقة: {cost_dict['description']} - {cost_dict['amount']} ر.س",
+            priority=AlertPriority.HIGH,
+            type="مالي",
+            related_id=cost_dict.get('project_id')
+        )
+        await create_alert(alert_data)
+    
     cost_obj = Cost(**cost_dict)
     cost_data = cost_obj.dict()
     # Convert date to datetime for MongoDB
     if 'date' in cost_data and isinstance(cost_data['date'], date):
         cost_data['date'] = datetime.combine(cost_data['date'], datetime.min.time())
     
-    # Update project actual cost
-    await db.projects.update_one(
-        {"id": cost.project_id},
-        {"$inc": {"actual_cost": cost.amount}}
-    )
+    # Update project actual cost only if approved
+    if cost_obj.approval_status == ApprovalStatus.APPROVED:
+        await db.projects.update_one(
+            {"id": cost.project_id},
+            {"$inc": {"actual_cost": cost.amount}}
+        )
     
     await db.costs.insert_one(cost_data)
     return cost_obj
 
 @api_router.get("/costs", response_model=List[Cost])
-async def get_costs(project_id: Optional[str] = None):
+async def get_costs(
+    project_id: Optional[str] = None, 
+    category: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None
+):
     query = {}
     if project_id:
         query["project_id"] = project_id
+    if category:
+        query["category"] = category
+    if start_date or end_date:
+        date_query = {}
+        if start_date:
+            date_query["$gte"] = datetime.combine(start_date, datetime.min.time())
+        if end_date:
+            date_query["$lte"] = datetime.combine(end_date, datetime.max.time())
+        query["date"] = date_query
     
-    costs = await db.costs.find(query).to_list(1000)
+    costs = await db.costs.find(query).sort("date", -1).to_list(1000)
     return [Cost(**cost) for cost in costs]
 
 @api_router.get("/costs/{cost_id}", response_model=Cost)
@@ -705,26 +744,94 @@ async def delete_cost(cost_id: str):
     if not cost:
         raise HTTPException(status_code=404, detail="التكلفة غير موجودة")
     
-    # Update project actual cost
-    await db.projects.update_one(
-        {"id": cost["project_id"]},
-        {"$inc": {"actual_cost": -cost["amount"]}}
-    )
+    # Update project actual cost if cost was approved
+    if cost.get('approval_status') == ApprovalStatus.APPROVED:
+        await db.projects.update_one(
+            {"id": cost["project_id"]},
+            {"$inc": {"actual_cost": -cost["amount"]}}
+        )
     
     await db.costs.delete_one({"id": cost_id})
     return {"message": "تم حذف التكلفة بنجاح"}
 
-# Suppliers endpoints
+@api_router.put("/costs/{cost_id}/approve")
+async def approve_cost(cost_id: str, approver_id: str):
+    cost = await db.costs.find_one({"id": cost_id})
+    if not cost:
+        raise HTTPException(status_code=404, detail="التكلفة غير موجودة")
+    
+    # Update cost approval status
+    await db.costs.update_one(
+        {"id": cost_id},
+        {"$set": {
+            "approval_status": ApprovalStatus.APPROVED,
+            "approved_by": approver_id
+        }}
+    )
+    
+    # Update project actual cost
+    await db.projects.update_one(
+        {"id": cost["project_id"]},
+        {"$inc": {"actual_cost": cost["amount"]}}
+    )
+    
+    return {"message": "تم اعتماد التكلفة بنجاح"}
+
+# Approval System endpoints
+@api_router.post("/approvals", response_model=Approval)
+async def create_approval(approval: ApprovalCreate):
+    approval_obj = Approval(**approval.dict())
+    await db.approvals.insert_one(approval_obj.dict())
+    return approval_obj
+
+@api_router.get("/approvals", response_model=List[Approval])
+async def get_approvals(status: Optional[str] = None, type: Optional[str] = None):
+    query = {}
+    if status:
+        query["status"] = status
+    if type:
+        query["type"] = type
+        
+    approvals = await db.approvals.find(query).sort("request_date", -1).to_list(1000)
+    return [Approval(**approval) for approval in approvals]
+
+@api_router.put("/approvals/{approval_id}")
+async def process_approval(approval_id: str, status: ApprovalStatus, comments: Optional[str] = None):
+    result = await db.approvals.update_one(
+        {"id": approval_id},
+        {"$set": {
+            "status": status,
+            "approval_date": datetime.utcnow(),
+            "comments": comments
+        }}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="طلب الموافقة غير موجود")
+    
+    return {"message": "تم معالجة طلب الموافقة"}
+
+# Enhanced Suppliers endpoints
 @api_router.post("/suppliers", response_model=Supplier)
 async def create_supplier(supplier: SupplierCreate):
     supplier_dict = supplier.dict()
+    
+    # Auto-generate supplier code if not provided
+    if not supplier_dict.get('code'):
+        supplier_count = await db.suppliers.count_documents({}) + 1
+        supplier_dict['code'] = f"SUP-{supplier_count:04d}"
+    
     supplier_obj = Supplier(**supplier_dict)
     await db.suppliers.insert_one(supplier_obj.dict())
     return supplier_obj
 
 @api_router.get("/suppliers", response_model=List[Supplier])
-async def get_suppliers():
-    suppliers = await db.suppliers.find().to_list(1000)
+async def get_suppliers(category: Optional[str] = None):
+    query = {}
+    if category:
+        query["category"] = category
+        
+    suppliers = await db.suppliers.find(query).to_list(1000)
     return [Supplier(**supplier) for supplier in suppliers]
 
 @api_router.get("/suppliers/{supplier_id}", response_model=Supplier)
@@ -754,17 +861,45 @@ async def delete_supplier(supplier_id: str):
         raise HTTPException(status_code=404, detail="المورد غير موجود")
     return {"message": "تم حذف المورد بنجاح"}
 
-# Items endpoints
+@api_router.put("/suppliers/{supplier_id}/balance")
+async def update_supplier_balance(supplier_id: str, amount: float):
+    result = await db.suppliers.update_one(
+        {"id": supplier_id},
+        {"$inc": {"current_balance": amount}}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="المورد غير موجود")
+    
+    return {"message": "تم تحديث رصيد المورد"}
+
+# Enhanced Items endpoints
 @api_router.post("/items", response_model=Item)
 async def create_item(item: ItemCreate):
     item_dict = item.dict()
+    
+    # Convert expiry date
+    if 'expiry_date' in item_dict and item_dict['expiry_date'] and isinstance(item_dict['expiry_date'], date):
+        item_dict['expiry_date'] = datetime.combine(item_dict['expiry_date'], datetime.min.time())
+    
     item_obj = Item(**item_dict)
-    await db.items.insert_one(item_obj.dict())
+    item_data = item_obj.dict()
+    
+    if 'expiry_date' in item_data and isinstance(item_data['expiry_date'], date):
+        item_data['expiry_date'] = datetime.combine(item_data['expiry_date'], datetime.min.time())
+    
+    await db.items.insert_one(item_data)
     return item_obj
 
 @api_router.get("/items", response_model=List[Item])
-async def get_items():
-    items = await db.items.find().to_list(1000)
+async def get_items(category: Optional[str] = None, low_stock: bool = False):
+    query = {}
+    if category:
+        query["category"] = category
+    if low_stock:
+        query["$expr"] = {"$lt": ["$current_stock", "$min_stock"]}
+        
+    items = await db.items.find(query).to_list(1000)
     return [Item(**item) for item in items]
 
 @api_router.get("/items/{item_id}", response_model=Item)
@@ -776,9 +911,15 @@ async def get_item(item_id: str):
 
 @api_router.put("/items/{item_id}", response_model=Item)
 async def update_item(item_id: str, item_update: ItemCreate):
+    item_dict = item_update.dict()
+    
+    # Convert expiry date
+    if 'expiry_date' in item_dict and item_dict['expiry_date'] and isinstance(item_dict['expiry_date'], date):
+        item_dict['expiry_date'] = datetime.combine(item_dict['expiry_date'], datetime.min.time())
+    
     result = await db.items.update_one(
         {"id": item_id}, 
-        {"$set": item_update.dict()}
+        {"$set": item_dict}
     )
     
     if result.modified_count == 0:
@@ -793,6 +934,35 @@ async def delete_item(item_id: str):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="الصنف غير موجود")
     return {"message": "تم حذف الصنف بنجاح"}
+
+@api_router.put("/items/{item_id}/stock")
+async def update_item_stock(item_id: str, quantity: float, operation: str = "add"):
+    """Update item stock - operation can be 'add', 'subtract', or 'set'"""
+    if operation == "add":
+        update_query = {"$inc": {"current_stock": quantity}}
+    elif operation == "subtract":
+        update_query = {"$inc": {"current_stock": -quantity}}
+    else:  # set
+        update_query = {"$set": {"current_stock": quantity}}
+    
+    result = await db.items.update_one({"id": item_id}, update_query)
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="الصنف غير موجود")
+    
+    # Check if stock is below minimum and create alert
+    item = await db.items.find_one({"id": item_id})
+    if item and item.get('current_stock', 0) < item.get('min_stock', 0):
+        alert_data = AlertCreate(
+            title="نفاد مخزون",
+            message=f"الصنف {item.get('name')} وصل إلى الحد الأدنى للمخزون",
+            priority=AlertPriority.HIGH,
+            type="مخزون",
+            related_id=item_id
+        )
+        await create_alert(alert_data)
+    
+    return {"message": "تم تحديث المخزون بنجاح"}
 
 # Dashboard stats endpoint
 @api_router.get("/dashboard/stats", response_model=DashboardStats)
