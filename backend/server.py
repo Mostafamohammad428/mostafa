@@ -180,7 +180,15 @@ async def delete_project(project_id: str):
 @api_router.post("/costs", response_model=Cost)
 async def create_cost(cost: CostCreate):
     cost_dict = cost.dict()
+    # Convert date to datetime for MongoDB compatibility
+    if 'date' in cost_dict and isinstance(cost_dict['date'], date):
+        cost_dict['date'] = datetime.combine(cost_dict['date'], datetime.min.time())
+    
     cost_obj = Cost(**cost_dict)
+    cost_data = cost_obj.dict()
+    # Convert date to datetime for MongoDB
+    if 'date' in cost_data and isinstance(cost_data['date'], date):
+        cost_data['date'] = datetime.combine(cost_data['date'], datetime.min.time())
     
     # Update project actual cost
     await db.projects.update_one(
@@ -188,7 +196,7 @@ async def create_cost(cost: CostCreate):
         {"$inc": {"actual_cost": cost.amount}}
     )
     
-    await db.costs.insert_one(cost_obj.dict())
+    await db.costs.insert_one(cost_data)
     return cost_obj
 
 @api_router.get("/costs", response_model=List[Cost])
