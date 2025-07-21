@@ -964,37 +964,387 @@ async def update_item_stock(item_id: str, quantity: float, operation: str = "add
     
     return {"message": "تم تحديث المخزون بنجاح"}
 
-# Dashboard stats endpoint
+# Enhanced dashboard stats endpoint
 @api_router.get("/dashboard/stats", response_model=DashboardStats)
 async def get_dashboard_stats():
     # Get counts
     total_projects = await db.projects.count_documents({})
-    active_projects = await db.projects.count_documents({"status": "نشط"})
+    active_projects = await db.projects.count_documents({"status": ProjectStatus.ACTIVE})
+    completed_projects = await db.projects.count_documents({"status": ProjectStatus.COMPLETED})
     total_suppliers = await db.suppliers.count_documents({})
+    total_employees = await db.employees.count_documents({})
     total_items = await db.items.count_documents({})
+    total_contracts = await db.contracts.count_documents({})
+    pending_approvals = await db.approvals.count_documents({"status": ApprovalStatus.PENDING})
+    unread_alerts = await db.alerts.count_documents({"is_read": False})
     
     # Get financial data
     projects = await db.projects.find().to_list(1000)
     total_budget = sum(project.get("budget", 0) for project in projects)
     total_actual_cost = sum(project.get("actual_cost", 0) for project in projects)
     budget_variance = total_budget - total_actual_cost
+    profit_margin = ((total_budget - total_actual_cost) / total_budget * 100) if total_budget > 0 else 0
     
     # Projects by status
     projects_by_status = {}
     for project in projects:
-        status = project.get("status", "نشط")
+        status = project.get("status", ProjectStatus.ACTIVE)
         projects_by_status[status] = projects_by_status.get(status, 0) + 1
+    
+    # Costs by category
+    costs = await db.costs.find({"approval_status": ApprovalStatus.APPROVED}).to_list(1000)
+    costs_by_category = {}
+    for cost in costs:
+        category = cost.get("category", "أخرى")
+        costs_by_category[category] = costs_by_category.get(category, 0) + cost.get("amount", 0)
+    
+    # Top projects by cost
+    top_projects_by_cost = sorted(
+        [{"name": p.get("name", ""), "cost": p.get("actual_cost", 0), "id": p.get("id", "")} for p in projects],
+        key=lambda x: x["cost"], reverse=True
+    )[:5]
+    
+    # Overdue projects
+    current_date = datetime.utcnow()
+    overdue_projects = 0
+    for project in projects:
+        end_date = project.get("end_date")
+        if end_date and isinstance(end_date, datetime) and end_date < current_date and project.get("status") != ProjectStatus.COMPLETED:
+            overdue_projects += 1
+    
+    # Low stock items
+    low_stock_items = await db.items.count_documents({
+        "$expr": {"$lt": ["$current_stock", "$min_stock"]}
+    })
+    
+    # Monthly expenses for the last 6 months
+    monthly_expenses = []
+    for i in range(6):
+        month_start = datetime.utcnow().replace(day=1) - timedelta(days=30*i)
+        month_end = (month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        
+        month_costs = await db.costs.find({
+            "date": {"$gte": month_start, "$lte": month_end},
+            "approval_status": ApprovalStatus.APPROVED
+        }).to_list(1000)
+        
+        total_month_expenses = sum(cost.get("amount", 0) for cost in month_costs)
+        monthly_expenses.append({
+            "month": month_start.strftime("%Y-%m"),
+            "expenses": total_month_expenses
+        })
+    
+    monthly_expenses.reverse()  # Show oldest first
     
     return DashboardStats(
         total_projects=total_projects,
         active_projects=active_projects,
+        completed_projects=completed_projects,
         total_budget=total_budget,
         total_actual_cost=total_actual_cost,
         total_suppliers=total_suppliers,
+        total_employees=total_employees,
         total_items=total_items,
+        total_contracts=total_contracts,
+        pending_approvals=pending_approvals,
+        unread_alerts=unread_alerts,
         budget_variance=budget_variance,
-        projects_by_status=projects_by_status
+        profit_margin=profit_margin,
+        projects_by_status=projects_by_status,
+        costs_by_category=costs_by_category,
+        top_projects_by_cost=top_projects_by_cost,
+        overdue_projects=overdue_projects,
+        low_stock_items=low_stock_items,
+        monthly_expenses=monthly_expenses
     )
+
+# Financial Reports endpoints
+@api_router.get("/reports/financial")
+async def get_financial_report(
+    project_id: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None
+):
+    """Generate comprehensive financial report"""
+    if not start_date:
+        start_date = datetime.utcnow().replace(day=1).date()  # First day of current month
+    if not end_date:
+        end_date = datetime.utcnow().date()
+    
+    # Convert dates to datetime
+    start_datetime = datetime.combine(start_date, datetime.min.time())
+    end_datetime = datetime.combine(end_date, datetime.max.time())
+    
+    # Base query
+    query = {
+        "date": {"$gte": start_datetime, "$lte": end_datetime},
+        "approval_status": ApprovalStatus.APPROVED
+    }
+    
+    if project_id:
+        query["project_id"] = project_id
+    
+    # Get costs
+    costs = await db.costs.find(query).to_list(1000)
+    total_expenses = sum(cost.get("amount", 0) for cost in costs)
+    
+    # Get project income (budget allocated)
+    if project_id:
+        project = await db.projects.find_one({"id": project_id})
+        total_income = project.get("budget", 0) if project else 0
+    else:
+        projects_query = {}
+        if start_date and end_date:
+            projects_query = {
+                "start_date": {"$gte": start_datetime, "$lte": end_datetime}
+            }
+        projects = await db.projects.find(projects_query).to_list(1000)
+        total_income = sum(p.get("budget", 0) for p in projects)
+    
+    # Calculate profit
+    net_profit = total_income - total_expenses
+    profit_margin = (net_profit / total_income * 100) if total_income > 0 else 0
+    
+    # Expenses by category
+    expenses_by_category = {}
+    for cost in costs:
+        category = cost.get("category", "أخرى")
+        expenses_by_category[category] = expenses_by_category.get(category, 0) + cost.get("amount", 0)
+    
+    # Monthly breakdown
+    monthly_breakdown = {}
+    for cost in costs:
+        cost_date = cost.get("date")
+        if isinstance(cost_date, datetime):
+            month_key = cost_date.strftime("%Y-%m")
+            if month_key not in monthly_breakdown:
+                monthly_breakdown[month_key] = {"income": 0, "expenses": 0, "profit": 0}
+            monthly_breakdown[month_key]["expenses"] += cost.get("amount", 0)
+    
+    # Add income to monthly breakdown (simplified - distribute evenly)
+    months_count = len(monthly_breakdown) if monthly_breakdown else 1
+    monthly_income = total_income / months_count
+    
+    for month_key in monthly_breakdown:
+        monthly_breakdown[month_key]["income"] = monthly_income
+        monthly_breakdown[month_key]["profit"] = monthly_breakdown[month_key]["income"] - monthly_breakdown[month_key]["expenses"]
+    
+    monthly_breakdown_list = [
+        {"month": k, **v} for k, v in sorted(monthly_breakdown.items())
+    ]
+    
+    return FinancialReport(
+        project_id=project_id,
+        start_date=start_date,
+        end_date=end_date,
+        total_income=total_income,
+        total_expenses=total_expenses,
+        net_profit=net_profit,
+        profit_margin=profit_margin,
+        expenses_by_category=expenses_by_category,
+        monthly_breakdown=monthly_breakdown_list
+    )
+
+@api_router.get("/reports/project-profitability")
+async def get_project_profitability_report():
+    """Get profitability analysis for all projects"""
+    projects = await db.projects.find().to_list(1000)
+    profitability_data = []
+    
+    for project in projects:
+        project_id = project.get("id")
+        project_costs = await db.costs.find({
+            "project_id": project_id,
+            "approval_status": ApprovalStatus.APPROVED
+        }).to_list(1000)
+        
+        total_costs = sum(cost.get("amount", 0) for cost in project_costs)
+        budget = project.get("budget", 0)
+        profit = budget - total_costs
+        profit_margin = (profit / budget * 100) if budget > 0 else 0
+        
+        profitability_data.append({
+            "project_id": project_id,
+            "project_name": project.get("name", ""),
+            "budget": budget,
+            "actual_cost": total_costs,
+            "profit": profit,
+            "profit_margin": profit_margin,
+            "status": project.get("status", ""),
+            "progress": project.get("progress_percentage", 0)
+        })
+    
+    # Sort by profit margin
+    profitability_data.sort(key=lambda x: x["profit_margin"], reverse=True)
+    
+    return {
+        "projects": profitability_data,
+        "summary": {
+            "total_projects": len(profitability_data),
+            "profitable_projects": len([p for p in profitability_data if p["profit"] > 0]),
+            "average_profit_margin": sum(p["profit_margin"] for p in profitability_data) / len(profitability_data) if profitability_data else 0
+        }
+    }
+
+@api_router.get("/reports/cash-flow")
+async def get_cash_flow_report(months: int = 12):
+    """Generate cash flow report for specified number of months"""
+    current_date = datetime.utcnow()
+    cash_flow_data = []
+    
+    for i in range(months):
+        month_start = (current_date - timedelta(days=30*i)).replace(day=1)
+        month_end = (month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        
+        # Get expenses for the month
+        month_costs = await db.costs.find({
+            "date": {"$gte": month_start, "$lte": month_end},
+            "approval_status": ApprovalStatus.APPROVED
+        }).to_list(1000)
+        
+        expenses = sum(cost.get("amount", 0) for cost in month_costs)
+        
+        # Get project budgets allocated in this month (simplified)
+        month_projects = await db.projects.find({
+            "start_date": {"$gte": month_start, "$lte": month_end}
+        }).to_list(1000)
+        
+        income = sum(project.get("budget", 0) for project in month_projects)
+        
+        net_flow = income - expenses
+        
+        cash_flow_data.append({
+            "month": month_start.strftime("%Y-%m"),
+            "income": income,
+            "expenses": expenses,
+            "net_flow": net_flow
+        })
+    
+    cash_flow_data.reverse()  # Show oldest first
+    
+    return {
+        "cash_flow": cash_flow_data,
+        "summary": {
+            "total_income": sum(item["income"] for item in cash_flow_data),
+            "total_expenses": sum(item["expenses"] for item in cash_flow_data),
+            "net_cash_flow": sum(item["net_flow"] for item in cash_flow_data)
+        }
+    }
+
+@api_router.get("/reports/supplier-performance")
+async def get_supplier_performance_report():
+    """Generate supplier performance report"""
+    suppliers = await db.suppliers.find().to_list(1000)
+    supplier_performance = []
+    
+    for supplier in suppliers:
+        supplier_id = supplier.get("id")
+        
+        # Get costs from this supplier
+        supplier_costs = await db.costs.find({
+            "supplier_id": supplier_id,
+            "approval_status": ApprovalStatus.APPROVED
+        }).to_list(1000)
+        
+        total_orders = len(supplier_costs)
+        total_value = sum(cost.get("amount", 0) for cost in supplier_costs)
+        avg_order_value = total_value / total_orders if total_orders > 0 else 0
+        
+        # Get latest orders
+        recent_orders = sorted(supplier_costs, key=lambda x: x.get("date", datetime.min), reverse=True)[:5]
+        
+        supplier_performance.append({
+            "supplier_id": supplier_id,
+            "supplier_name": supplier.get("name", ""),
+            "category": supplier.get("category", ""),
+            "rating": supplier.get("rating", 5),
+            "total_orders": total_orders,
+            "total_value": total_value,
+            "avg_order_value": avg_order_value,
+            "current_balance": supplier.get("current_balance", 0),
+            "recent_orders": [
+                {
+                    "date": order.get("date", "").strftime("%Y-%m-%d") if isinstance(order.get("date"), datetime) else str(order.get("date", "")),
+                    "amount": order.get("amount", 0),
+                    "description": order.get("description", "")
+                } for order in recent_orders
+            ]
+        })
+    
+    # Sort by total value
+    supplier_performance.sort(key=lambda x: x["total_value"], reverse=True)
+    
+    return {
+        "suppliers": supplier_performance,
+        "summary": {
+            "total_suppliers": len(supplier_performance),
+            "total_supplier_value": sum(s["total_value"] for s in supplier_performance),
+            "avg_supplier_rating": sum(s["rating"] for s in supplier_performance) / len(supplier_performance) if supplier_performance else 0
+        }
+    }
+
+# Analytics endpoints
+@api_router.get("/analytics/cost-trends")
+async def get_cost_trends(days: int = 30):
+    """Get cost trends over specified number of days"""
+    end_date = datetime.utcnow()
+    start_date = end_date - timedelta(days=days)
+    
+    costs = await db.costs.find({
+        "date": {"$gte": start_date, "$lte": end_date},
+        "approval_status": ApprovalStatus.APPROVED
+    }).to_list(1000)
+    
+    # Group costs by day
+    daily_costs = {}
+    for cost in costs:
+        cost_date = cost.get("date")
+        if isinstance(cost_date, datetime):
+            day_key = cost_date.strftime("%Y-%m-%d")
+            daily_costs[day_key] = daily_costs.get(day_key, 0) + cost.get("amount", 0)
+    
+    # Fill missing days with 0
+    trends = []
+    current_date = start_date
+    while current_date <= end_date:
+        day_key = current_date.strftime("%Y-%m-%d")
+        trends.append({
+            "date": day_key,
+            "amount": daily_costs.get(day_key, 0)
+        })
+        current_date += timedelta(days=1)
+    
+    return {"trends": trends}
+
+@api_router.get("/analytics/budget-utilization")
+async def get_budget_utilization():
+    """Get budget utilization across all projects"""
+    projects = await db.projects.find().to_list(1000)
+    utilization_data = []
+    
+    for project in projects:
+        budget = project.get("budget", 0)
+        actual_cost = project.get("actual_cost", 0)
+        utilization_percentage = (actual_cost / budget * 100) if budget > 0 else 0
+        
+        utilization_data.append({
+            "project_id": project.get("id"),
+            "project_name": project.get("name", ""),
+            "budget": budget,
+            "actual_cost": actual_cost,
+            "utilization_percentage": utilization_percentage,
+            "remaining_budget": budget - actual_cost,
+            "status": project.get("status", "")
+        })
+    
+    return {
+        "projects": utilization_data,
+        "summary": {
+            "avg_utilization": sum(p["utilization_percentage"] for p in utilization_data) / len(utilization_data) if utilization_data else 0,
+            "over_budget_projects": len([p for p in utilization_data if p["utilization_percentage"] > 100]),
+            "under_budget_projects": len([p for p in utilization_data if p["utilization_percentage"] < 100])
+        }
+    }
 
 # Include the router in the main app
 app.include_router(api_router)
