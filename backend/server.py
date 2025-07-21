@@ -30,6 +30,36 @@ app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
 
+# Define Enums
+class ProjectStatus(str, Enum):
+    ACTIVE = "نشط"
+    PAUSED = "متوقف"  
+    COMPLETED = "مكتمل"
+    CANCELLED = "ملغي"
+
+class EmployeeStatus(str, Enum):
+    ACTIVE = "نشط"
+    INACTIVE = "غير نشط"
+    ON_LEAVE = "في إجازة"
+
+class ContractStatus(str, Enum):
+    DRAFT = "مسودة"
+    ACTIVE = "نشط"
+    COMPLETED = "مكتمل"
+    CANCELLED = "ملغي"
+
+class AlertPriority(str, Enum):
+    LOW = "منخفض"
+    MEDIUM = "متوسط"
+    HIGH = "عالي"
+    CRITICAL = "حرج"
+
+class ApprovalStatus(str, Enum):
+    PENDING = "في الانتظار"
+    APPROVED = "موافق عليه"
+    REJECTED = "مرفوض"
+    CANCELLED = "ملغي"
+
 # Define Models
 class Project(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
