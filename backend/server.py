@@ -124,8 +124,21 @@ class DashboardStats(BaseModel):
 @api_router.post("/projects", response_model=Project)
 async def create_project(project: ProjectCreate):
     project_dict = project.dict()
+    # Convert date objects to datetime for MongoDB compatibility
+    if 'start_date' in project_dict and project_dict['start_date']:
+        project_dict['start_date'] = datetime.combine(project_dict['start_date'], datetime.min.time())
+    if 'end_date' in project_dict and project_dict['end_date']:
+        project_dict['end_date'] = datetime.combine(project_dict['end_date'], datetime.min.time())
+    
     project_obj = Project(**project_dict)
-    await db.projects.insert_one(project_obj.dict())
+    project_data = project_obj.dict()
+    # Convert date objects to datetime for MongoDB
+    if 'start_date' in project_data and isinstance(project_data['start_date'], date):
+        project_data['start_date'] = datetime.combine(project_data['start_date'], datetime.min.time())
+    if 'end_date' in project_data and isinstance(project_data['end_date'], date):
+        project_data['end_date'] = datetime.combine(project_data['end_date'], datetime.min.time())
+    
+    await db.projects.insert_one(project_data)
     return project_obj
 
 @api_router.get("/projects", response_model=List[Project])
