@@ -386,7 +386,7 @@ class FinancialReport(BaseModel):
     expenses_by_category: Dict[str, float]
     monthly_breakdown: List[Dict[str, Any]]
 
-# Projects endpoints
+# Enhanced Projects endpoints
 @api_router.post("/projects", response_model=Project)
 async def create_project(project: ProjectCreate):
     project_dict = project.dict()
@@ -396,20 +396,49 @@ async def create_project(project: ProjectCreate):
     if 'end_date' in project_dict and project_dict['end_date']:
         project_dict['end_date'] = datetime.combine(project_dict['end_date'], datetime.min.time())
     
+    # Auto-generate project code if not provided
+    if not project_dict.get('code'):
+        project_count = await db.projects.count_documents({}) + 1
+        project_dict['code'] = f"PRJ-{project_count:04d}"
+    
+    # Calculate estimated completion date if not provided
+    if project_dict.get('end_date'):
+        project_dict['estimated_completion_date'] = project_dict['end_date']
+    
     project_obj = Project(**project_dict)
     project_data = project_obj.dict()
+    
     # Convert date objects to datetime for MongoDB
     if 'start_date' in project_data and isinstance(project_data['start_date'], date):
         project_data['start_date'] = datetime.combine(project_data['start_date'], datetime.min.time())
     if 'end_date' in project_data and isinstance(project_data['end_date'], date):
         project_data['end_date'] = datetime.combine(project_data['end_date'], datetime.min.time())
+    if 'estimated_completion_date' in project_data and isinstance(project_data['estimated_completion_date'], date):
+        project_data['estimated_completion_date'] = datetime.combine(project_data['estimated_completion_date'], datetime.min.time())
     
     await db.projects.insert_one(project_data)
+    
+    # Create alert for new project
+    alert_data = AlertCreate(
+        title="مشروع جديد",
+        message=f"تم إنشاء مشروع جديد: {project.name}",
+        priority=AlertPriority.MEDIUM,
+        type="مشروع",
+        related_id=project_obj.id
+    )
+    await create_alert(alert_data)
+    
     return project_obj
 
 @api_router.get("/projects", response_model=List[Project])
-async def get_projects():
-    projects = await db.projects.find().to_list(1000)
+async def get_projects(status: Optional[str] = None, priority: Optional[str] = None):
+    query = {}
+    if status:
+        query["status"] = status
+    if priority:
+        query["priority"] = priority
+        
+    projects = await db.projects.find(query).to_list(1000)
     return [Project(**project) for project in projects]
 
 @api_router.get("/projects/{project_id}", response_model=Project)
@@ -447,6 +476,189 @@ async def delete_project(project_id: str):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="المشروع غير موجود")
     return {"message": "تم حذف المشروع بنجاح"}
+
+@api_router.put("/projects/{project_id}/progress")
+async def update_project_progress(project_id: str, progress: float):
+    if progress < 0 or progress > 100:
+        raise HTTPException(status_code=400, detail="نسبة الإنجاز يجب أن تكون بين 0 و 100")
+    
+    result = await db.projects.update_one(
+        {"id": project_id},
+        {"$set": {"progress_percentage": progress, "updated_at": datetime.utcnow()}}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="المشروع غير موجود")
+    
+    # Auto-update status based on progress
+    status_update = {}
+    if progress == 100:
+        status_update["status"] = ProjectStatus.COMPLETED
+    elif progress > 0:
+        status_update["status"] = ProjectStatus.ACTIVE
+        
+    if status_update:
+        await db.projects.update_one({"id": project_id}, {"$set": status_update})
+    
+    return {"message": "تم تحديث نسبة الإنجاز بنجاح"}
+
+# Employee Management endpoints
+@api_router.post("/employees", response_model=Employee)
+async def create_employee(employee: EmployeeCreate):
+    employee_dict = employee.dict()
+    if 'hire_date' in employee_dict and isinstance(employee_dict['hire_date'], date):
+        employee_dict['hire_date'] = datetime.combine(employee_dict['hire_date'], datetime.min.time())
+    
+    employee_obj = Employee(**employee_dict)
+    employee_data = employee_obj.dict()
+    
+    if 'hire_date' in employee_data and isinstance(employee_data['hire_date'], date):
+        employee_data['hire_date'] = datetime.combine(employee_data['hire_date'], datetime.min.time())
+    
+    await db.employees.insert_one(employee_data)
+    return employee_obj
+
+@api_router.get("/employees", response_model=List[Employee])
+async def get_employees(department: Optional[str] = None, status: Optional[str] = None):
+    query = {}
+    if department:
+        query["department"] = department
+    if status:
+        query["status"] = status
+        
+    employees = await db.employees.find(query).to_list(1000)
+    return [Employee(**employee) for employee in employees]
+
+@api_router.get("/employees/{employee_id}", response_model=Employee)
+async def get_employee(employee_id: str):
+    employee = await db.employees.find_one({"id": employee_id})
+    if not employee:
+        raise HTTPException(status_code=404, detail="الموظف غير موجود")
+    return Employee(**employee)
+
+# Contract Management endpoints
+@api_router.post("/contracts", response_model=Contract)
+async def create_contract(contract: ContractCreate):
+    contract_dict = contract.dict()
+    
+    # Convert dates to datetime
+    if 'start_date' in contract_dict and isinstance(contract_dict['start_date'], date):
+        contract_dict['start_date'] = datetime.combine(contract_dict['start_date'], datetime.min.time())
+    if 'end_date' in contract_dict and isinstance(contract_dict['end_date'], date):
+        contract_dict['end_date'] = datetime.combine(contract_dict['end_date'], datetime.min.time())
+    
+    # Calculate remaining amount
+    contract_dict['remaining_amount'] = contract_dict['total_value']
+    
+    contract_obj = Contract(**contract_dict)
+    contract_data = contract_obj.dict()
+    
+    # Convert dates for MongoDB
+    for date_field in ['start_date', 'end_date']:
+        if date_field in contract_data and isinstance(contract_data[date_field], date):
+            contract_data[date_field] = datetime.combine(contract_data[date_field], datetime.min.time())
+    
+    await db.contracts.insert_one(contract_data)
+    
+    # Create alert for new contract
+    alert_data = AlertCreate(
+        title="عقد جديد",
+        message=f"تم إنشاء عقد جديد مع: {contract.contractor_name}",
+        priority=AlertPriority.MEDIUM,
+        type="عقد",
+        related_id=contract_obj.id
+    )
+    await create_alert(alert_data)
+    
+    return contract_obj
+
+@api_router.get("/contracts", response_model=List[Contract])
+async def get_contracts(project_id: Optional[str] = None, status: Optional[str] = None):
+    query = {}
+    if project_id:
+        query["project_id"] = project_id
+    if status:
+        query["status"] = status
+        
+    contracts = await db.contracts.find(query).to_list(1000)
+    return [Contract(**contract) for contract in contracts]
+
+# Alert System endpoints
+@api_router.post("/alerts", response_model=Alert)
+async def create_alert(alert: AlertCreate):
+    alert_obj = Alert(**alert.dict())
+    await db.alerts.insert_one(alert_obj.dict())
+    return alert_obj
+
+@api_router.get("/alerts", response_model=List[Alert])
+async def get_alerts(unread_only: bool = False, priority: Optional[str] = None):
+    query = {}
+    if unread_only:
+        query["is_read"] = False
+    if priority:
+        query["priority"] = priority
+        
+    alerts = await db.alerts.find(query).sort("created_at", -1).to_list(100)
+    return [Alert(**alert) for alert in alerts]
+
+@api_router.put("/alerts/{alert_id}/read")
+async def mark_alert_as_read(alert_id: str):
+    result = await db.alerts.update_one(
+        {"id": alert_id},
+        {"$set": {"is_read": True}}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="التنبيه غير موجود")
+    
+    return {"message": "تم تحديد التنبيه كمقروء"}
+
+# Document Management endpoints
+@api_router.post("/documents", response_model=Document)
+async def create_document(document: DocumentCreate):
+    document_obj = Document(**document.dict())
+    await db.documents.insert_one(document_obj.dict())
+    return document_obj
+
+@api_router.get("/documents", response_model=List[Document])
+async def get_documents(project_id: Optional[str] = None, type: Optional[str] = None):
+    query = {}
+    if project_id:
+        query["project_id"] = project_id
+    if type:
+        query["type"] = type
+        
+    documents = await db.documents.find(query).to_list(1000)
+    return [Document(**doc) for doc in documents]
+
+# Time Tracking endpoints
+@api_router.post("/time-entries", response_model=TimeEntry)
+async def create_time_entry(time_entry: TimeEntryCreate):
+    time_entry_dict = time_entry.dict()
+    
+    # Convert date and datetime fields
+    if 'date' in time_entry_dict and isinstance(time_entry_dict['date'], date):
+        time_entry_dict['date'] = datetime.combine(time_entry_dict['date'], datetime.min.time())
+    
+    time_entry_obj = TimeEntry(**time_entry_dict)
+    time_entry_data = time_entry_obj.dict()
+    
+    if 'date' in time_entry_data and isinstance(time_entry_data['date'], date):
+        time_entry_data['date'] = datetime.combine(time_entry_data['date'], datetime.min.time())
+    
+    await db.time_entries.insert_one(time_entry_data)
+    return time_entry_obj
+
+@api_router.get("/time-entries", response_model=List[TimeEntry])
+async def get_time_entries(employee_id: Optional[str] = None, project_id: Optional[str] = None):
+    query = {}
+    if employee_id:
+        query["employee_id"] = employee_id
+    if project_id:
+        query["project_id"] = project_id
+        
+    time_entries = await db.time_entries.find(query).to_list(1000)
+    return [TimeEntry(**entry) for entry in time_entries]
 
 # Costs endpoints
 @api_router.post("/costs", response_model=Cost)
