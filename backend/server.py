@@ -61,96 +61,330 @@ class ApprovalStatus(str, Enum):
     CANCELLED = "ملغي"
 
 # Define Models
+# Enhanced Project Model with advanced features
 class Project(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
+    code: Optional[str] = None  # Project code for reference
     description: Optional[str] = None
     start_date: date
     end_date: Optional[date] = None
     budget: float
     actual_cost: float = 0.0
-    status: str = "نشط"  # نشط، متوقف، مكتمل
+    status: ProjectStatus = ProjectStatus.ACTIVE
     client_name: Optional[str] = None
+    project_manager_id: Optional[str] = None
+    priority: AlertPriority = AlertPriority.MEDIUM
+    progress_percentage: float = 0.0
+    estimated_completion_date: Optional[date] = None
+    profit_margin: float = 0.0
+    risk_level: AlertPriority = AlertPriority.LOW
+    location: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 class ProjectCreate(BaseModel):
     name: str
+    code: Optional[str] = None
     description: Optional[str] = None
     start_date: date
     end_date: Optional[date] = None
     budget: float
     client_name: Optional[str] = None
+    project_manager_id: Optional[str] = None
+    priority: AlertPriority = AlertPriority.MEDIUM
+    location: Optional[str] = None
 
+# Employee Management Models
+class Employee(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_number: str
+    name: str
+    position: str
+    department: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    hire_date: date
+    salary: float
+    status: EmployeeStatus = EmployeeStatus.ACTIVE
+    national_id: Optional[str] = None
+    address: Optional[str] = None
+    emergency_contact: Optional[str] = None
+    bank_account: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class EmployeeCreate(BaseModel):
+    employee_number: str
+    name: str
+    position: str
+    department: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    hire_date: date
+    salary: float
+    national_id: Optional[str] = None
+    address: Optional[str] = None
+    emergency_contact: Optional[str] = None
+    bank_account: Optional[str] = None
+
+# Contract Management Models
+class Contract(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    contract_number: str
+    project_id: str
+    contractor_name: str
+    description: str
+    start_date: date
+    end_date: date
+    total_value: float
+    paid_amount: float = 0.0
+    remaining_amount: float = 0.0
+    status: ContractStatus = ContractStatus.DRAFT
+    terms: Optional[str] = None
+    penalty_clause: Optional[str] = None
+    contact_person: Optional[str] = None
+    contact_phone: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+class ContractCreate(BaseModel):
+    contract_number: str
+    project_id: str
+    contractor_name: str
+    description: str
+    start_date: date
+    end_date: date
+    total_value: float
+    terms: Optional[str] = None
+    penalty_clause: Optional[str] = None
+    contact_person: Optional[str] = None
+    contact_phone: Optional[str] = None
+
+# Alert System Models
+class Alert(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    title: str
+    message: str
+    priority: AlertPriority
+    type: str  # مالي، مشروع، موظف، عقد
+    related_id: Optional[str] = None  # ID of related entity
+    is_read: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    expires_at: Optional[datetime] = None
+
+class AlertCreate(BaseModel):
+    title: str
+    message: str
+    priority: AlertPriority
+    type: str
+    related_id: Optional[str] = None
+    expires_at: Optional[datetime] = None
+
+# Document Management Models
+class Document(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    type: str  # عقد، فاتورة، تقرير، صورة
+    project_id: Optional[str] = None
+    contract_id: Optional[str] = None
+    file_data: str  # Base64 encoded file
+    file_size: int
+    file_type: str  # pdf, doc, image
+    uploaded_by: Optional[str] = None
+    description: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class DocumentCreate(BaseModel):
+    name: str
+    type: str
+    project_id: Optional[str] = None
+    contract_id: Optional[str] = None
+    file_data: str
+    file_size: int
+    file_type: str
+    uploaded_by: Optional[str] = None
+    description: Optional[str] = None
+
+# Time Tracking Models
+class TimeEntry(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    project_id: str
+    task_description: str
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    duration_hours: float = 0.0
+    billable_hours: float = 0.0
+    hourly_rate: float = 0.0
+    date: date
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class TimeEntryCreate(BaseModel):
+    employee_id: str
+    project_id: str
+    task_description: str
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    duration_hours: float
+    billable_hours: float = 0.0
+    hourly_rate: float = 0.0
+    date: date
+
+# Approval System Models  
+class Approval(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    type: str  # cost_approval, contract_approval, budget_change
+    request_id: str  # ID of the item requiring approval
+    requested_by: str
+    approver_id: Optional[str] = None
+    status: ApprovalStatus = ApprovalStatus.PENDING
+    amount: Optional[float] = None
+    description: str
+    request_date: datetime = Field(default_factory=datetime.utcnow)
+    approval_date: Optional[datetime] = None
+    comments: Optional[str] = None
+
+class ApprovalCreate(BaseModel):
+    type: str
+    request_id: str
+    requested_by: str
+    approver_id: Optional[str] = None
+    amount: Optional[float] = None
+    description: str
+    comments: Optional[str] = None
+
+# Enhanced Cost Model
 class Cost(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     project_id: str
     category: str  # مواد، عمالة، معدات، أخرى
+    subcategory: Optional[str] = None
     description: str
     amount: float
     date: date
     supplier_id: Optional[str] = None
     invoice_number: Optional[str] = None
+    receipt_image: Optional[str] = None  # Base64 encoded image
+    approved_by: Optional[str] = None
+    approval_status: ApprovalStatus = ApprovalStatus.APPROVED
+    payment_method: str = "نقدي"  # نقدي، بنكي، شيك
+    reference_number: Optional[str] = None
+    tax_amount: float = 0.0
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class CostCreate(BaseModel):
     project_id: str
     category: str
+    subcategory: Optional[str] = None
     description: str
     amount: float
     date: date
     supplier_id: Optional[str] = None
     invoice_number: Optional[str] = None
+    receipt_image: Optional[str] = None
+    payment_method: str = "نقدي"
+    reference_number: Optional[str] = None
+    tax_amount: float = 0.0
 
+# Enhanced Supplier Model
 class Supplier(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
+    code: Optional[str] = None
     contact_person: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
     category: str  # مواد، خدمات، معدات
+    tax_number: Optional[str] = None
+    bank_account: Optional[str] = None
+    credit_limit: float = 0.0
+    current_balance: float = 0.0
+    rating: int = 5  # 1-5 stars
+    notes: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class SupplierCreate(BaseModel):
     name: str
+    code: Optional[str] = None
     contact_person: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
     category: str
+    tax_number: Optional[str] = None
+    bank_account: Optional[str] = None
+    credit_limit: float = 0.0
+    rating: int = 5
 
+# Enhanced Item Model
 class Item(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     code: str
+    barcode: Optional[str] = None
     unit: str  # متر، كيلو، قطعة، إلخ
     current_stock: float = 0.0
     min_stock: float = 0.0
+    max_stock: float = 0.0
     unit_cost: float = 0.0
+    selling_price: float = 0.0
     category: str
+    subcategory: Optional[str] = None
     supplier_id: Optional[str] = None
+    location: Optional[str] = None  # موقع التخزين
+    expiry_date: Optional[date] = None
+    notes: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class ItemCreate(BaseModel):
     name: str
     code: str
+    barcode: Optional[str] = None
     unit: str
     min_stock: float = 0.0
+    max_stock: float = 0.0
     unit_cost: float = 0.0
+    selling_price: float = 0.0
     category: str
+    subcategory: Optional[str] = None
     supplier_id: Optional[str] = None
+    location: Optional[str] = None
+    expiry_date: Optional[date] = None
+    notes: Optional[str] = None
 
-# Dashboard Stats Model
+# Enhanced Dashboard Stats Model
 class DashboardStats(BaseModel):
     total_projects: int
     active_projects: int
+    completed_projects: int
     total_budget: float
     total_actual_cost: float
     total_suppliers: int
+    total_employees: int
     total_items: int
+    total_contracts: int
+    pending_approvals: int
+    unread_alerts: int
     budget_variance: float
-    projects_by_status: dict
+    profit_margin: float
+    projects_by_status: Dict[str, int]
+    costs_by_category: Dict[str, float]
+    top_projects_by_cost: List[Dict[str, Any]]
+    overdue_projects: int
+    low_stock_items: int
+    monthly_expenses: List[Dict[str, Any]]
+    
+# Financial Report Models
+class FinancialReport(BaseModel):
+    project_id: Optional[str] = None
+    start_date: date
+    end_date: date
+    total_income: float
+    total_expenses: float
+    net_profit: float
+    profit_margin: float
+    expenses_by_category: Dict[str, float]
+    monthly_breakdown: List[Dict[str, Any]]
 
 # Projects endpoints
 @api_router.post("/projects", response_model=Project)
