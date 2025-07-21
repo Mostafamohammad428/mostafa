@@ -237,13 +237,12 @@ metadata:
 
 test_plan:
   current_focus:
-    - "ERP Cost Management API - Projects Module"
-    - "ERP Cost Management API - Costs Module"
-    - "ERP Dashboard Statistics API"
     - "Arabic ERP Dashboard Interface"
     - "Projects Management Interface"
+    - "Arabic Navigation and Layout"
+    - "Arabic Styling and RTL Support"
   stuck_tasks: []
-  test_all: true
+  test_all: false
   test_priority: "high_first"
 
 agent_communication:
