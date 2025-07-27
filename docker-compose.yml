@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: erp_mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin123
+      MONGO_INITDB_DATABASE: erp_system
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - erp_network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: erp_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URL=mongodb://admin:admin123@mongodb:27017/erp_system?authSource=admin
+      - DB_NAME=erp_system
+      - SECRET_KEY=your-super-secret-key-change-this-in-production-12345678901234567890
+      - ALGORITHM=HS256
+    depends_on:
+      - mongodb
+    volumes:
+      - ./backend:/app
+    networks:
+      - erp_network
+
+  # Frontend Application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: erp_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_BACKEND_URL=http://localhost:8000
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - erp_network
+
+volumes:
+  mongodb_data:
+
+networks:
+  erp_network:
+    driver: bridge
